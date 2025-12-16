@@ -1,76 +1,44 @@
-# streamlit_app.py
-# GitHub + Streamlit Cloud friendly (no tokens, no DagsHub, no MLflow).
-# Expects a saved sklearn Pipeline at: models/model.joblib
-
 import streamlit as st
 import pandas as pd
 from pathlib import Path
 import joblib
 
 # ----------------------------
-# Config
+# Page config
 # ----------------------------
-st.set_page_config(
-    page_title="Student Risk Classification",
-    layout="centered",
-)
+st.set_page_config(page_title="Student Risk Classification", layout="centered")
 
-MODEL_PATH = Path("models/model.joblib")
+# ----------------------------
+# Model path (ROOT)
+# ----------------------------
+MODEL_PATH = Path("model.joblib")
 
+# These MUST match the columns your pipeline was trained on (from SQL JOIN).
 REQUIRED_COLUMNS = [
     "school", "sex", "age", "address", "famsize", "Pstatus",
     "Medu", "Fedu", "internet", "studytime", "failures", "absences", "subject"
 ]
 
 # ----------------------------
-# Model loader
+# Load model (cached)
 # ----------------------------
 @st.cache_resource
 def load_model():
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            f"Model file not found at: {MODEL_PATH}\n\n"
-            "Fix:\n"
-            "1) Create a folder named 'models' in your repo\n"
-            "2) Save your trained pipeline as 'models/model.joblib'\n"
-            "   Example (in notebook):\n"
-            "   import joblib\n"
-            "   joblib.dump(pipeline, 'models/model.joblib')\n"
-            "3) Commit & push to GitHub, then redeploy Streamlit Cloud"
+            "model.joblib not found in repo root.\n\n"
+            "Expected structure:\n"
+            "  your-repo/\n"
+            "    streamlit_app.py\n"
+            "    requirements.txt\n"
+            "    model.joblib\n\n"
+            "Fix: commit and push model.joblib to GitHub, then redeploy Streamlit Cloud."
         )
     return joblib.load(MODEL_PATH)
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def make_single_input_df(
-    school, sex, age, address, famsize, pstatus, medu, fedu,
-    internet, studytime, failures, absences, subject
-) -> pd.DataFrame:
-    row = {
-        "school": school,
-        "sex": sex,
-        "age": int(age),
-        "address": address,
-        "famsize": famsize,
-        "Pstatus": pstatus,
-        "Medu": int(medu),
-        "Fedu": int(fedu),
-        "internet": internet,
-        "studytime": int(studytime),
-        "failures": int(failures),
-        "absences": int(absences),
-        "subject": subject
-    }
-    return pd.DataFrame([row], columns=REQUIRED_COLUMNS)
-
-def predict(model, X: pd.DataFrame):
-    # Returns: pred_label (0/1), pred_proba (float or None)
-    pred = model.predict(X)
-    proba = None
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)[:, 1]  # probability of class "1"
-    return int(pred[0]), (float(proba[0]) if proba is not None else None)
+def make_single_input_df(**kwargs) -> pd.DataFrame:
+    # Ensure correct column order
+    return pd.DataFrame([{c: kwargs[c] for c in REQUIRED_COLUMNS}], columns=REQUIRED_COLUMNS)
 
 def validate_and_prepare_uploaded_df(df: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
@@ -82,74 +50,87 @@ def validate_and_prepare_uploaded_df(df: pd.DataFrame) -> pd.DataFrame:
             + ", ".join(REQUIRED_COLUMNS)
         )
 
-    # Keep only required columns in correct order
     X = df[REQUIRED_COLUMNS].copy()
 
-    # Type casting (safe)
-    for col in ["age", "Medu", "Fedu", "studytime", "failures", "absences"]:
-        X[col] = pd.to_numeric(X[col], errors="coerce")
+    # Cast numeric columns safely
+    num_cols = ["age", "Medu", "Fedu", "studytime", "failures", "absences"]
+    for c in num_cols:
+        X[c] = pd.to_numeric(X[c], errors="coerce")
 
-    if X[["age", "Medu", "Fedu", "studytime", "failures", "absences"]].isnull().any().any():
+    if X[num_cols].isnull().any().any():
+        bad = X[num_cols].isnull().sum()
         raise ValueError(
-            "Some numeric columns contain non-numeric or missing values. "
-            "Please fix your CSV and try again."
+            "Some numeric columns have invalid/missing values. Fix your CSV.\n\n"
+            + "\n".join([f"{k}: {int(v)} invalid" for k, v in bad.items() if v > 0])
         )
 
-    # Cast to int for neatness
-    X["age"] = X["age"].astype(int)
-    X["Medu"] = X["Medu"].astype(int)
-    X["Fedu"] = X["Fedu"].astype(int)
-    X["studytime"] = X["studytime"].astype(int)
-    X["failures"] = X["failures"].astype(int)
-    X["absences"] = X["absences"].astype(int)
+    # Keep ints
+    for c in num_cols:
+        X[c] = X[c].astype(int)
 
     return X
 
+def predict_one(model, X: pd.DataFrame):
+    pred = int(model.predict(X)[0])
+    proba = None
+    if hasattr(model, "predict_proba"):
+        proba = float(model.predict_proba(X)[:, 1][0])  # probability for class 1
+    return pred, proba
+
+
 # ----------------------------
-# UI
+# App UI
 # ----------------------------
 st.title("🎓 Student Risk Classification")
-st.write(
-    "Predict whether a student is **AT RISK** (1) or **NOT AT RISK** (0) "
-    "based on academic + demographic factors."
-)
+st.write("Predict whether a student is **AT RISK** (1) or **NOT AT RISK** (0).")
+st.markdown("---")
 
-# Load model (with friendly error)
+# Load model with nice error
 try:
     model = load_model()
 except Exception as e:
     st.error(str(e))
     st.stop()
 
-st.markdown("---")
 st.subheader("Single Student Prediction")
 
-col1, col2 = st.columns(2)
+c1, c2 = st.columns(2)
 
-with col1:
+with c1:
     school = st.selectbox("School", ["GP", "MS"], index=0)
     sex = st.selectbox("Sex", ["F", "M"], index=0)
     age = st.number_input("Age", min_value=10, max_value=30, value=18, step=1)
     address = st.selectbox("Address", ["U", "R"], index=0)  # Urban/Rural
-    famsize = st.selectbox("Family Size", ["LE3", "GT3"], index=1)  # <=3 / >3
-    pstatus = st.selectbox("Parents Cohabitation Status (Pstatus)", ["T", "A"], index=0)  # Together/Apart
+    famsize = st.selectbox("Family Size", ["LE3", "GT3"], index=1)
+    pstatus = st.selectbox("Pstatus (Parents Together/Apart)", ["T", "A"], index=0)
 
-with col2:
-    medu = st.selectbox("Mother Education (Medu: 0-4)", [0, 1, 2, 3, 4], index=2)
-    fedu = st.selectbox("Father Education (Fedu: 0-4)", [0, 1, 2, 3, 4], index=2)
-    internet = st.selectbox("Internet Access", ["yes", "no"], index=0)
-    studytime = st.selectbox("Weekly Study Time (1-4)", [1, 2, 3, 4], index=1)
-    failures = st.selectbox("Past Failures (0-3)", [0, 1, 2, 3], index=0)
+with c2:
+    medu = st.selectbox("Mother Education (Medu 0-4)", [0, 1, 2, 3, 4], index=2)
+    fedu = st.selectbox("Father Education (Fedu 0-4)", [0, 1, 2, 3, 4], index=2)
+    internet = st.selectbox("Internet", ["yes", "no"], index=0)
+    studytime = st.selectbox("Study Time (1-4)", [1, 2, 3, 4], index=1)
+    failures = st.selectbox("Failures (0-3)", [0, 1, 2, 3], index=0)
     absences = st.number_input("Absences", min_value=0, max_value=100, value=5, step=1)
     subject = st.selectbox("Subject", ["math", "portuguese"], index=0)
 
 X_single = make_single_input_df(
-    school, sex, age, address, famsize, pstatus, medu, fedu,
-    internet, studytime, failures, absences, subject
+    school=school,
+    sex=sex,
+    age=int(age),
+    address=address,
+    famsize=famsize,
+    Pstatus=pstatus,
+    Medu=int(medu),
+    Fedu=int(fedu),
+    internet=internet,
+    studytime=int(studytime),
+    failures=int(failures),
+    absences=int(absences),
+    subject=subject,
 )
 
 if st.button("🔍 Predict Risk"):
-    pred_label, pred_proba = predict(model, X_single)
+    pred_label, pred_proba = predict_one(model, X_single)
 
     if pred_label == 1:
         st.error("⚠️ Prediction: **AT RISK**")
@@ -159,16 +140,14 @@ if st.button("🔍 Predict Risk"):
     if pred_proba is not None:
         st.write(f"Risk probability (class=1): **{pred_proba:.3f}**")
 
-    with st.expander("Show input used for prediction"):
+    with st.expander("Show input"):
         st.dataframe(X_single)
 
 st.markdown("---")
 st.subheader("Batch Prediction via CSV Upload")
 
-st.write(
-    "Upload a CSV containing these columns:\n\n"
-    + ", ".join(REQUIRED_COLUMNS)
-)
+st.write("Upload a CSV with these columns:")
+st.code(", ".join(REQUIRED_COLUMNS))
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -181,26 +160,20 @@ if uploaded is not None:
         out = df_up.copy()
         out["pred_at_risk"] = preds
 
-        # Add probability if available
         if hasattr(model, "predict_proba"):
             out["pred_risk_proba"] = model.predict_proba(X_batch)[:, 1]
 
-        st.success(f"✅ Completed predictions for {len(out)} rows.")
+        st.success(f"✅ Predicted {len(out)} rows.")
         st.dataframe(out.head(50))
 
-        csv_bytes = out.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="⬇️ Download predictions as CSV",
-            data=csv_bytes,
+            "⬇️ Download predictions CSV",
+            data=out.to_csv(index=False).encode("utf-8"),
             file_name="student_risk_predictions.csv",
-            mime="text/csv"
+            mime="text/csv",
         )
 
     except Exception as e:
         st.error(str(e))
 
-st.markdown("---")
-st.caption(
-    "Deployment note: This app loads the model from your GitHub repo (models/model.joblib). "
-    "Do NOT hardcode secrets/tokens in public repos."
-)
+st.caption("Model is loaded from repo root: model.joblib (no tokens, no MLflow).")
