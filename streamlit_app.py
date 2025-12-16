@@ -4,23 +4,20 @@ import os
 import pandas as pd
 from pathlib import Path
 
-# --- MLflow Configuration (Connect to DAGsHub/MLflow Server) ---
-# NOTE: The credentials (MLFLOW_TRACKING_URI, USERNAME, PASSWORD) 
-# must be set in Streamlit Secrets, NOT hardcoded here.
+# --- MLflow Configuration (Connect to Dagshub/MLflow Server) ---
+# This code safely reads your MLflow credentials from Streamlit Secrets.
 if "MLFLOW_TRACKING_URI" in st.secrets:
     os.environ["MLFLOW_TRACKING_URI"] = st.secrets["MLFLOW_TRACKING_URI"]
     if "MLFLOW_TRACKING_USERNAME" in st.secrets:
         os.environ["MLFLOW_TRACKING_USERNAME"] = st.secrets["MLFLOW_TRACKING_USERNAME"]
         os.environ["MLFLOW_TRACKING_PASSWORD"] = st.secrets["MLFLOW_TRACKING_PASSWORD"]
 
-
 st.set_page_config(page_title="Student Risk Classification", layout="centered")
 
 # --- Load model from remote MLflow Run URI ---
 @st.cache_resource
 def load_model():
-    # 🎯 FIX APPLIED: Using the direct Run ID to load the model artifact.
-    # YOUR MLFLOW RUN ID: de916ddbd30c42339fab10c01d93bb37
+    # Model URI is set to load the model artifact from your specific Run ID.
     MODEL_URI = "runs:/de916ddbd30c42339fab10c01d93bb37/model" 
     
     st.info(f"Attempting to load model from: {MODEL_URI}")
@@ -30,12 +27,13 @@ def load_model():
         model = mlflow.pyfunc.load_model(MODEL_URI) 
         return model
     except Exception as e:
-        # This catches errors related to authentication, connection, or model structure
-        st.error("Model loading FAILED. Check the Run ID and Streamlit Secrets.")
+        # If this fails, the issue is with the MLFLOW_TRACKING_URI or credentials in Streamlit Secrets.
+        st.error("Model loading FAILED. Check the Run ID and Streamlit Secrets configuration.")
         st.exception(e)
         st.stop()
 
 
+# Load the model only once
 model = load_model()
 
 # =========================
@@ -46,7 +44,7 @@ st.write("Predict whether a student is **at risk** based on academic and demogra
 st.markdown("---")
 
 # =========================
-# User Input Section
+# User Input Section (Sidebar)
 # =========================
 
 with st.sidebar:
