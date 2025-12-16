@@ -18,6 +18,7 @@ st.set_page_config(page_title="Student Risk Classification", layout="centered")
 @st.cache_resource
 def load_model():
     # Model URI is set to load the model artifact from your specific Run ID.
+    # The Run ID: de916ddbd30c42339fab10c01d93bb37
     MODEL_URI = "runs:/de916ddbd30c42339fab10c01d93bb37/model" 
     
     st.info(f"Attempting to load model from: {MODEL_URI}")
