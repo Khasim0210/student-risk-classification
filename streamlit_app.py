@@ -16,23 +16,22 @@ if "MLFLOW_TRACKING_URI" in st.secrets:
 
 st.set_page_config(page_title="Student Risk Classification", layout="centered")
 
-# --- Load model from remote MLflow Registry URI ---
+# --- Load model from remote MLflow Run URI ---
 @st.cache_resource
 def load_model():
-    # 🎯 IMPORTANT: This URI MUST match the model location in your MLflow Registry
-    # This URI is copied from your app.py.
-    MODEL_URI = "models:/Logistic_Regression_Baseline/Production" 
+    # 🎯 FIX APPLIED: Using the direct Run ID to load the model artifact.
+    # YOUR MLFLOW RUN ID: de916ddbd30c42339fab10c01d93bb37
+    MODEL_URI = "runs:/de916ddbd30c42339fab10c01d93bb37/model" 
     
     st.info(f"Attempting to load model from: {MODEL_URI}")
     
     try:
-        # We use mlflow.pyfunc.load_model because that is what Streamlit is expecting
-        # (even though the model was saved as sklearn, pyfunc is more generic).
+        # Load the MLflow PyFunc model
         model = mlflow.pyfunc.load_model(MODEL_URI) 
         return model
     except Exception as e:
-        # If this fails, the issue is with the URI or the secrets/authentication
-        st.error("Model loading FAILED. Check the model URI and Streamlit Secrets.")
+        # This catches errors related to authentication, connection, or model structure
+        st.error("Model loading FAILED. Check the Run ID and Streamlit Secrets.")
         st.exception(e)
         st.stop()
 
@@ -40,13 +39,16 @@ def load_model():
 model = load_model()
 
 # =========================
-# Streamlit UI (Rest of the code remains the same)
+# Streamlit UI
 # =========================
 st.title("🎓 Student Risk Classification")
 st.write("Predict whether a student is **at risk** based on academic and demographic factors.")
 st.markdown("---")
 
-# ... (The rest of your Streamlit UI code goes here)
+# =========================
+# User Input Section
+# =========================
+
 with st.sidebar:
     st.header("Student Input Features")
     age = st.number_input("Age", min_value=10, max_value=30, value=18)
