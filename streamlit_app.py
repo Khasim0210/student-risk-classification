@@ -3,9 +3,13 @@ from pathlib import Path
 
 import streamlit as st
 import pandas as pd
+import joblib
+
 import mlflow
 import mlflow.pyfunc
 from mlflow.tracking import MlflowClient
+
+from dagshub.common.api.repo import RepoAPI  # requires `dagshub` in requirements.txt
 
 st.set_page_config(page_title="Student Risk Classification", layout="centered")
 
@@ -13,16 +17,11 @@ st.set_page_config(page_title="Student Risk Classification", layout="centered")
 # CONFIG
 # =========================
 RUN_ID = "430295b203584572848b7c8881d7e9aa"
+DAGSHUB_REPO = "Khasim0210/student-risk-classification"
+MODEL_PATH_IN_REPO = "model.joblib"  # must match the file path in your repo
 
-# IMPORTANT:
-# Put your model file in the repo as ONE of these paths.
-# If your filename is different, add it here.
-LOCAL_MODEL_CANDIDATES = [
-    Path("model.joblib"),            # repo root
-    Path("model.pkl"),               # repo root
-    Path("models/model.joblib"),     # models/ folder
-    Path("models/model.pkl"),        # models/ folder
-]
+# Download target (safe writable location on Streamlit Cloud)
+DOWNLOADED_MODEL_PATH = Path("/tmp/model.joblib")
 
 # =========================
 # MLflow config from secrets (optional)
@@ -40,8 +39,34 @@ st.caption(f"MLflow Tracking URI: {mlflow.get_tracking_uri()}")
 # =========================
 # Helpers
 # =========================
+def is_git_lfs_pointer_bytes(b: bytes) -> bool:
+    return b"version https://git-lfs.github.com/spec/v1" in b[:200]
+
+def download_real_model_from_dagshub(dest: Path) -> None:
+    user = st.secrets.get("MLFLOW_TRACKING_USERNAME")
+    token = st.secrets.get("MLFLOW_TRACKING_PASSWORD")
+    if not user or not token:
+        st.error("Missing secrets: MLFLOW_TRACKING_USERNAME / MLFLOW_TRACKING_PASSWORD (use your DagsHub token).")
+        st.stop()
+
+    st.info("Downloading the real model from DagsHub (resolving Git LFS pointer)...")
+    api = RepoAPI(repo=DAGSHUB_REPO, auth=(user, token))
+    data = api.get_file(MODEL_PATH_IN_REPO)  # returns bytes :contentReference[oaicite:0]{index=0}
+
+    # If API still returns an LFS pointer, we can't proceed
+    if is_git_lfs_pointer_bytes(data):
+        st.error(
+            "DagsHub API returned a Git LFS pointer instead of the real model bytes.\n"
+            "This means the real LFS object is not accessible to this environment.\n"
+            "Fix: re-upload the model without LFS, or store the model in DagsHub Storage/DVC and download that file."
+        )
+        st.stop()
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    st.success(f"Model downloaded to {dest} ({dest.stat().st_size} bytes)")
+
 def _find_mlflow_model_dir(client: MlflowClient, run_id: str) -> str | None:
-    """Find an artifact directory that contains an MLflow model (has an 'MLmodel' file)."""
     def walk(path: str):
         for item in client.list_artifacts(run_id, path):
             if item.is_dir:
@@ -52,46 +77,11 @@ def _find_mlflow_model_dir(client: MlflowClient, run_id: str) -> str | None:
                 if item.path.endswith("MLmodel"):
                     return os.path.dirname(item.path)
         return None
-
     return walk("")
-
-
-def _load_local_model():
-    # Debug: show what files exist in the deployed folder
-    with st.expander("🔎 Debug: local model file check"):
-        for p in LOCAL_MODEL_CANDIDATES:
-            st.write(f"{p} -> {'✅ exists' if p.exists() else '❌ missing'}")
-        st.write("Current directory files:", [x.name for x in Path(".").iterdir()])
-
-    model_path = next((p for p in LOCAL_MODEL_CANDIDATES if p.exists()), None)
-    if model_path is None:
-        st.error(
-            "No model found to load.\n\n"
-            "✅ Your MLflow run exists, but it contains **no model artifacts**.\n\n"
-            "To run this app WITHOUT MLflow logging, upload ONE of these files to your repo:\n"
-            "- model.joblib (recommended)\n"
-            "- model.pkl\n"
-            "- models/model.joblib\n"
-            "- models/model.pkl\n\n"
-            "Make sure it is a REAL model file created by joblib/pickle, not an empty text file."
-        )
-        st.stop()
-
-    try:
-        import joblib
-        model = joblib.load(model_path)
-    except Exception:
-        import pickle
-        with open(model_path, "rb") as f:
-            model = pickle.load(f)
-
-    st.success(f"Loaded local model: {model_path}")
-    return model
-
 
 @st.cache_resource
 def load_model():
-    # Try MLflow first (only works if the run actually has a model artifact)
+    # 1) Try MLflow model (your run currently has none; this will fall back)
     try:
         client = MlflowClient()
         run = client.get_run(RUN_ID)
@@ -103,17 +93,35 @@ def load_model():
             st.info(f"Loading MLflow model from: {model_uri}")
             return mlflow.pyfunc.load_model(model_uri)
 
-        st.warning("This run has no MLflow model artifacts. Falling back to local model file...")
-
+        st.warning("This run has no MLflow model artifacts. Falling back to local model...")
     except Exception as e:
-        st.warning("MLflow not usable here (tracking/auth/run issue). Falling back to local model file...")
+        st.warning("MLflow not usable. Falling back to local model...")
         st.caption(f"MLflow detail: {type(e).__name__}: {e}")
 
-    # Fallback to local file
-    return _load_local_model()
+    # 2) Local file in repo (may be LFS pointer)
+    repo_model_path = Path("model.joblib")
+    if not repo_model_path.exists():
+        st.error("model.joblib not found in the repo folder.")
+        st.stop()
 
+    head = repo_model_path.read_bytes()[:200]
+    if is_git_lfs_pointer_bytes(head):
+        # Download real bytes to /tmp and load from there
+        download_real_model_from_dagshub(DOWNLOADED_MODEL_PATH)
+        return joblib.load(DOWNLOADED_MODEL_PATH)
 
-model = load_model()
+    # If not a pointer, try loading directly
+    return joblib.load(repo_model_path)
+
+# =========================
+# Load model
+# =========================
+try:
+    model = load_model()
+except Exception as e:
+    st.error("Model loading FAILED.")
+    st.exception(e)
+    st.stop()
 
 # =========================
 # UI
@@ -150,11 +158,7 @@ if st.button("🔍 Predict Risk"):
     try:
         pred = model.predict(input_data)
         prediction = pred[0] if hasattr(pred, "__len__") else pred
-
-        try:
-            label = int(prediction)
-        except Exception:
-            label = 1 if str(prediction).strip().lower() in ("1", "yes", "true", "at risk") else 0
+        label = int(prediction)
 
         st.subheader("Prediction Result")
         if label == 1:
@@ -163,7 +167,6 @@ if st.button("🔍 Predict Risk"):
         else:
             st.success("✅ Student is **NOT AT RISK**")
             st.metric("Risk Indicator", "Low", "On Track")
-
     except Exception as e:
-        st.error("Prediction failed. Your model may expect different feature names/types or preprocessing.")
+        st.error("Prediction failed. Model may expect different preprocessing/feature types.")
         st.exception(e)
