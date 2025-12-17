@@ -8,28 +8,22 @@ from mlflow.tracking import MlflowClient
 st.set_page_config(page_title="Student Risk Classification", layout="centered")
 
 # =========================
-# MLflow Configuration
+# MLflow / DagsHub config
 # =========================
-# Read from Streamlit Secrets -> environment variables (and set tracking uri explicitly)
 if "MLFLOW_TRACKING_URI" in st.secrets:
-    os.environ["MLFLOW_TRACKING_URI"] = st.secrets["MLFLOW_TRACKING_URI"]
     mlflow.set_tracking_uri(st.secrets["MLFLOW_TRACKING_URI"])
+    os.environ["MLFLOW_TRACKING_URI"] = st.secrets["MLFLOW_TRACKING_URI"]
 
-# Optional auth (DagsHub / basic auth)
 if "MLFLOW_TRACKING_USERNAME" in st.secrets and "MLFLOW_TRACKING_PASSWORD" in st.secrets:
     os.environ["MLFLOW_TRACKING_USERNAME"] = st.secrets["MLFLOW_TRACKING_USERNAME"]
     os.environ["MLFLOW_TRACKING_PASSWORD"] = st.secrets["MLFLOW_TRACKING_PASSWORD"]
 
-# Helpful debug (shows whether secrets are actually applied)
 st.caption(f"MLflow Tracking URI: {mlflow.get_tracking_uri()}")
 
 RUN_ID = "430295b203584572848b7c8881d7e9aa"
 
 def _find_model_dir_in_run(client: MlflowClient, run_id: str) -> str:
-    """
-    Recursively searches the run's artifacts for an 'MLmodel' file
-    and returns the directory containing it (the correct pyfunc model folder).
-    """
+    """Find the directory containing an MLflow model (has an 'MLmodel' file)."""
     def walk(path: str):
         for item in client.list_artifacts(run_id, path):
             if item.is_dir:
@@ -37,49 +31,41 @@ def _find_model_dir_in_run(client: MlflowClient, run_id: str) -> str:
                 if found:
                     return found
             else:
-                # MLflow model directories contain an 'MLmodel' file
                 if item.path.endswith("MLmodel"):
-                    # directory containing MLmodel
                     return os.path.dirname(item.path)
         return None
 
-    found_dir = walk("")
-    if not found_dir:
-        raise RuntimeError(
-            "Could not find an MLflow model artifact (no 'MLmodel' file) under this run's artifacts."
-        )
-    return found_dir
+    found = walk("")
+    if not found:
+        raise RuntimeError("No MLflow model found in artifacts (no 'MLmodel' file).")
+    return found
 
 @st.cache_resource
 def load_model():
-    st.info(f"Attempting to load model from run: {RUN_ID}")
-
     try:
         client = MlflowClient()
 
-        # This will throw if run_id is not visible in the current tracking server
-        _ = client.get_run(RUN_ID)
+        # Fails with "run not found" if tracking URI/auth is wrong
+        run = client.get_run(RUN_ID)
+        st.success(f"Connected. Experiment ID: {run.info.experiment_id}")
 
-        # Auto-detect model folder inside artifacts
         model_dir = _find_model_dir_in_run(client, RUN_ID)
         model_uri = f"runs:/{RUN_ID}/{model_dir}"
 
-        st.info(f"Detected model artifact path: {model_dir}")
+        st.info(f"Detected model path: {model_dir}")
         st.info(f"Loading model from: {model_uri}")
 
-        model = mlflow.pyfunc.load_model(model_uri)
-        return model
+        return mlflow.pyfunc.load_model(model_uri)
 
     except Exception as e:
-        st.error("Model loading FAILED. This usually means the tracking URI/auth is wrong or the run ID is not in that server.")
+        st.error("Model loading FAILED: your tracking URI/auth is not pointing to the server that contains this run.")
         st.exception(e)
         st.stop()
 
-# Load the model only once
 model = load_model()
 
 # =========================
-# Streamlit UI
+# UI
 # =========================
 st.title("🎓 Student Risk Classification")
 st.write("Predict whether a student is **at risk** based on academic and demographic factors.")
@@ -106,24 +92,19 @@ input_data = pd.DataFrame([{
     "activities": activities
 }])
 
-st.subheader("Input Preview")
-st.dataframe(input_data, use_container_width=True)
-
 if st.button("🔍 Predict Risk"):
     try:
         pred = model.predict(input_data)
-
-        # Handle common return types (array-like / scalar)
         prediction = pred[0] if hasattr(pred, "__len__") else pred
 
         st.subheader("Prediction Result")
         if int(prediction) == 1:
             st.error("⚠️ Student is **AT RISK**")
-            st.metric(label="Risk Indicator", value="High", delta="Needs Intervention")
+            st.metric("Risk Indicator", "High", "Needs Intervention")
         else:
             st.success("✅ Student is **NOT AT RISK**")
-            st.metric(label="Risk Indicator", value="Low", delta="On Track")
+            st.metric("Risk Indicator", "Low", "On Track")
 
     except Exception as e:
-        st.error("Prediction failed. Check model compatibility with input data / preprocessing.")
+        st.error("Prediction failed. Check model input schema / preprocessing.")
         st.exception(e)
