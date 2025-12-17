@@ -14,13 +14,14 @@ st.set_page_config(page_title="Student Risk Classification", layout="centered")
 # =========================
 RUN_ID = "430295b203584572848b7c8881d7e9aa"
 
-# If you ever log a model to MLflow, it will be inside some artifact folder.
-# We'll auto-detect it, so you don't need to guess.
+# IMPORTANT:
+# Put your model file in the repo as ONE of these paths.
+# If your filename is different, add it here.
 LOCAL_MODEL_CANDIDATES = [
-    Path("model.joblib"),
-    Path("model.pkl"),
-    Path("models/model.joblib"),
-    Path("models/model.pkl"),
+    Path("model.joblib"),            # repo root
+    Path("model.pkl"),               # repo root
+    Path("models/model.joblib"),     # models/ folder
+    Path("models/model.pkl"),        # models/ folder
 ]
 
 # =========================
@@ -56,15 +57,23 @@ def _find_mlflow_model_dir(client: MlflowClient, run_id: str) -> str | None:
 
 
 def _load_local_model():
+    # Debug: show what files exist in the deployed folder
+    with st.expander("🔎 Debug: local model file check"):
+        for p in LOCAL_MODEL_CANDIDATES:
+            st.write(f"{p} -> {'✅ exists' if p.exists() else '❌ missing'}")
+        st.write("Current directory files:", [x.name for x in Path(".").iterdir()])
+
     model_path = next((p for p in LOCAL_MODEL_CANDIDATES if p.exists()), None)
     if model_path is None:
         st.error(
             "No model found to load.\n\n"
             "✅ Your MLflow run exists, but it contains **no model artifacts**.\n\n"
-            "To run this app WITHOUT MLflow logging, add a model file to your repo:\n"
-            "- `model.joblib`  (recommended)\n"
-            "- `model.pkl`\n"
-            "- or `models/model.joblib` / `models/model.pkl`\n"
+            "To run this app WITHOUT MLflow logging, upload ONE of these files to your repo:\n"
+            "- model.joblib (recommended)\n"
+            "- model.pkl\n"
+            "- models/model.joblib\n"
+            "- models/model.pkl\n\n"
+            "Make sure it is a REAL model file created by joblib/pickle, not an empty text file."
         )
         st.stop()
 
