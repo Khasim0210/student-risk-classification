@@ -4,5 +4,3 @@ scikit-learn
 joblib
 mlflow
 dagshub
-model.joblib
-model.pkl
